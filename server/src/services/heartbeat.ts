@@ -1,3 +1,4 @@
+import { admitExplicitNativeContinuation } from "./explicit-native-continuation.js";
 import { getExecutionBlocker } from "./execution-blocker.js";
 import { CONVERSATION_CONTINUATION_POLICY, hasConversationContinuationPolicy, isConversationAdapter } from "./conversation-continuation.js";
 import {
@@ -26252,6 +26253,18 @@ export function heartbeatService(
             return { kind: "skipped" as const };
           }
 
+          const explicitContinuationRunId = randomUUID();
+          const explicitContinuation = await admitExplicitNativeContinuation({
+            db: tx as unknown as Db, companyId: issue.companyId, issueId: issue.id,
+            agentId, actorType: opts.requestedByActorType, actorId: opts.requestedByActorId,
+            reason, commentId: wakeCommentId ?? null, successorRunId: explicitContinuationRunId,
+          });
+          if (explicitContinuation) {
+            enrichedContextSnapshot.forceFreshSession = true;
+            enrichedContextSnapshot.previousRunId = explicitContinuation.previousRunId;
+            enrichedContextSnapshot.explicitUserContinuation = explicitContinuation;
+          }
+
           const wakeupRequest = await tx
             .insert(agentWakeupRequests)
             .values({
@@ -26311,6 +26324,7 @@ export function heartbeatService(
           const newRun = await tx
             .insert(heartbeatRuns)
             .values({
+              ...(explicitContinuation ? { id: explicitContinuationRunId } : {}),
               companyId: agent.companyId,
               agentId,
               invocationSource: source,
@@ -26327,7 +26341,7 @@ export function heartbeatService(
                     adoptedCommentIds,
                   )
                 : enrichedContextSnapshot,
-              sessionIdBefore: sessionBefore,
+              sessionIdBefore: explicitContinuation ? null : sessionBefore,
               continuationAttempt,
               ...(reconciledSourceRunId
                 ? { retryOfRunId: reconciledSourceRunId }
